@@ -32,9 +32,8 @@ LOG.names = sub("^Intensity", "LOG2", Intensity.names)
 data[, LOG.names] = lapply(data[, Intensity.names], function(x) log2(x))
 
 ## Filter columns by names and extract protein IDs
-filter_cols = function(df, group) {
+filter_cols = function(df) {
   # df = data frame containing phosphoproteomics data
-  # group = a vector of characters indicating the sample names
   require(stringr)
   
   # Extract UniProtID from Protein column
@@ -66,38 +65,24 @@ dataC = dplyr::select(dataC, -(LOG2.U266_bR1:LOG2.U266_bR3))   # Remove U266 fro
 # Step 4 - Data Filtering / Normalization
 ############################################################
 ## Group filtering to remove -Inf values (sourced from pulsed_SILAC_ozlem.R)
-filter_valids = function(df, conditions, min_count, 
-                         is_infinite = TRUE, at_least_one = FALSE) {
+filter_valids = function(df, conditions, min_count, at_least_one = FALSE) {
   # df = data frame containing LOG2 data for filtering and organized by data type
   # conditions = a character vector dictating the grouping
   # min_count = a numeric vector of the same length as "conditions" indicating the minimum 
   #     number of valid values for each condition for retention
-  # is_infinite = Boolean indicating the nature of missing data
-  #     if TRUE, counts Inf/-Inf values as missing values
-  #     if FALSE, counts NaN values as missing values
   # at_least_one = TRUE means to keep the row if min_count is met for at least one condition
   #     FALSE means min_count must be met across all conditions for retention
-  require(dplyr)
   
-  log2.names = names(dplyr::select(df, starts_with("LOG2")))   # Extract LOG2 columns
+  log2.names = grep("^LOG2", names(df), value = TRUE)   # Extract LOG2 column names
   cond.names = lapply(conditions, # Group column names by conditions
                       function(x) grep(x, log2.names, value = TRUE, perl = TRUE))
   
-  if (is_infinite) {
-    cond.filter = sapply(1:length(cond.names), function(i) {
-      df2 = df[cond.names[[i]]]   # Extract columns of interest
-      df2 = as.matrix(df2)   # Cast as matrix for the following command
-      sums = rowSums(!is.infinite(df2)) # count the number of valid values for each condition
-      sums >= min_count[i]   # Calculates whether min_count requirement is met
-    })
-  } else {
-    cond.filter = sapply(1:length(cond.names), function(i) {
-      df2 = df[cond.names[[i]]]   # Extract columns of interest
-      df2 = as.matrix(df2)   # Cast as matrix for the following command
-      sums = rowSums(!is.nan(df2)) # count the number of valid values for each condition
-      sums >= min_count[i]   # Calculates whether min_count requirement is met
-    })
-  }
+  cond.filter = sapply(1:length(cond.names), function(i) {
+    df2 = df[cond.names[[i]]]   # Extract columns of interest
+    df2 = as.matrix(df2)   # Cast as matrix for the following command
+    sums = rowSums(is.finite(df2)) # count the number of valid values for each condition
+    sums >= min_count[i]   # Calculates whether min_count requirement is met
+  })
   
   if (at_least_one) {
     df$KEEP = apply(cond.filter, 1, any)
@@ -110,7 +95,6 @@ filter_valids = function(df, conditions, min_count,
 dataCF = filter_valids(dataC, 
                        c("AMO1(?=_)", "AMO1br", "INA6", "KMS11", "KMS34", "L363", "MM1S", "RPMI8226"),
                        min_count = rep(2, 8),
-                       is_infinite = TRUE,
                        at_least_one = TRUE)
 
 
@@ -146,7 +130,7 @@ plot_pairs = function(df, pattern, use_keep = FALSE) {
 #plot_pairs(dataCF, "^LOG2.*KMS34", TRUE)
 
 
-## Quantile normalization for each cell line (alternative to global median normalization)
+## NORMALIZATION METHOD 1: Quantile normalization for each cell line (alternative to global median normalization)
 quantile_norm = function(df, conditions, use_keep = TRUE) {
   # df = data frame containing LOG2 columns for normalization
   # conditions = a character vector dictating the grouping
@@ -154,13 +138,13 @@ quantile_norm = function(df, conditions, use_keep = TRUE) {
   require(dplyr)
   require(limma)
   
-  log2.names = names(dplyr::select(df, starts_with("LOG2")))   # Extract LOG2 columns
+  log2.names = grep("^LOG2", names(df), value = TRUE)   # Extract LOG2 columns
   cond.names = sapply(conditions, # Group column names by conditions
                       function(x) grep(x, log2.names, value = TRUE, perl = TRUE))
   
   if (use_keep) df = df[df$KEEP, ]
   LOG2_df = as.matrix(df[log2.names])
-  LOG2_df[is.infinite(LOG2_df)] = NA
+  LOG2_df[!is.finite(LOG2_df)] = NA
   
   for(group in cond.names) LOG2_df[, group] = normalizeQuantiles(LOG2_df[, group])
   
@@ -169,10 +153,11 @@ quantile_norm = function(df, conditions, use_keep = TRUE) {
   return(df)
 }
 dataCFQ = quantile_norm(dataCF,
-                        c("AMO1(?=_)", "AMO1br", "INA6", "KMS11", "KMS34", "L363", "MM1S", "RPMI8226"))
+                        c("AMO1(?=_)", "AMO1br", "INA6", "KMS11", "KMS34", "L363", "MM1S", "RPMI8226"),
+                        use_keep = TRUE)
 
 
-## Global median normalization for each sample (center median at 0)
+## NORMALIZATION METHOD 2: Global median normalization for each sample (center median at 0)
 median_centering = function(df, use_keep = TRUE) {
   # df = data frame containing LOG2 columns for normalization
   # use_keep = filter rows using KEEP column prior to computing the median for normalization
@@ -181,7 +166,7 @@ median_centering = function(df, use_keep = TRUE) {
     df[, LOG2.names] = lapply(LOG2.names, 
                               function(x) {
                                 LOG2 = df[df$KEEP, x]
-                                LOG2[is.infinite(LOG2)] = NA   # Exclude 0 intensity values from median calculation
+                                LOG2[!is.finite(LOG2)] = NA   # Exclude 0 intensity values from median calculation
                                 gMedian = median(LOG2, na.rm = TRUE)
                                 df[, x] - gMedian
                                 }
@@ -190,11 +175,11 @@ median_centering = function(df, use_keep = TRUE) {
     df[, LOG2.names] = lapply(LOG2.names, 
                               function(x) {
                                 LOG2 = df[, x]
-                                LOG2[is.infinite(LOG2)] = NA   # Exclude 0 intensity values from median calculation
+                                LOG2[!is.finite(LOG2)] = NA   # Exclude 0 intensity values from median calculation
                                 gMedian = median(LOG2, na.rm = TRUE)
                                 df[, x] - gMedian
                               }
-    )
+                            )
   }
   return(df)
 }
@@ -244,28 +229,42 @@ impute_data = function(df, width = 0.3, downshift = 1.8, use_keep = TRUE) {
 #dataCFMI = impute_data(dataCFM, use_keep = TRUE)
 
 
-## Impute missing data METHOD 2: Hybrid missing data imputation
-hybrid_impute = function(df, conditions, width = 0.3, downshift = 1.8, use_keep = TRUE) {
+## Impute missing data METHOD 2: Hybrid missing data imputation (sourced from Jae_surfaceome_analysis.R)
+hybrid_impute = function(df, conditions, use_keep = TRUE) {
   # df = data frame containing filtered 
   # conditions = a character vector dictating the grouping
-  # Assumes missing data (in df) follows a narrowed and downshifted normal distribution
-  # use_keep = filter rows using KEEP column prior to imputation
+  # use_keep = filter rows using KEEP column prior to imputation (WILL AFFECT IMPUTATION OUTCOME IF DATA NOT FILTERED ALREADY)
+  require(imputeLCMD)
   require(dplyr)
   
-  log2.names = names(dplyr::select(df, starts_with("LOG2")))   # Extract LOG2 columns
-  impute.names = sub("^LOG2", "IMP", log2.names)
-  cond.names = sapply(conditions, # Group column names by conditions
-                      function(x) grep(x, log2.names, value = TRUE, perl = TRUE))
-  
+  # Apply KEEP filter
   if (use_keep) df = df[df$KEEP, ]
-  LOG2_df = as.matrix(df[log2.names])
-  LOG2_df[is.infinite(LOG2_df)] = NA
+  
+  # Group column names by condition
+  log2DF = select(df, starts_with("LOG2"))   # Extract LOG2 dataframe
+  DF = select(df, -starts_with("LOG2"))
+  cond.names = lapply(conditions, # Group column names by conditions
+                      function(x) grep(x, names(log2DF), value = TRUE, perl = TRUE))
   
   # Create new columns indicating whether the values are imputed
-  df[impute.names] = lapply(log2.names, function(x) is.na(df[, x]))p
+  impute.names = sub("^LOG2", "IMP", unlist(cond.names))
+  DF[impute.names] = lapply(unlist(cond.names), function(x) !is.finite(log2DF[[x]]))
   
+  # Imputation
+  set.seed(1)
+  imputeDF = lapply(cond.names,   # Impute each group separately
+                    function(x) {
+                      tempDF = as.matrix(log2DF[x])
+                      modelS = model.Selector(tempDF)
+                      impute.MAR.MNAR(tempDF, modelS, method.MAR = "MLE", method.MNAR = "MinProb")
+                    })
+  imputeDF = do.call(cbind, imputeDF)   # Combine a list of data frames into a single data frame
+  
+  return(cbind(DF, imputeDF))
 }
-dataCFQH = hybrid_impute(dataCFQ, use_keep = TRUE)
+dataCFQH = hybrid_impute(dataCFQ, 
+                         c("AMO1(?=_)", "AMO1br", "INA6", "KMS11", "KMS34", "L363", "MM1S", "RPMI8226"),
+                         use_keep = TRUE)
   
 
 
@@ -283,14 +282,14 @@ hist_impute = function(df, use_keep = TRUE) {
   }
   
   LOG2.df = dplyr::select(df, starts_with("LOG2"))
-  impute.df = dplyr::select(df, starts_with("impute"))
+  impute.df = dplyr::select(df, starts_with("IMP"))
   
   # Reshape data into columns
   LOG2.df = gather(LOG2.df, "sample", "intensity")
-  impute.df = gather(impute.df, "sample", "impute")
+  impute.df = gather(impute.df, "sample", "IMP")
   
   # Combine data
-  combine.df = bind_cols(LOG2.df, impute.df["impute"])
+  combine.df = bind_cols(LOG2.df, impute.df["IMP"])
   
   # Create labels
   combine.df = mutate(combine.df, sample = sub("^LOG2\\.", "", sample)) %>%
@@ -298,7 +297,7 @@ hist_impute = function(df, use_keep = TRUE) {
     mutate(replicate = sub("_", "", replicate)) %>%
     mutate(sample = sub("_.*", "", sample))
 
-  ggplot(combine.df, aes(x = intensity, fill = impute)) +
+  ggplot(combine.df, aes(x = intensity, fill = IMP)) +
     geom_histogram(alpha = 0.3, binwidth = 0.2, position = "identity") +
     labs(x = expression("log"[2]*"-transformed Intensity"), y = "Frequency") +
     facet_grid(sample ~ replicate) +
@@ -307,7 +306,8 @@ hist_impute = function(df, use_keep = TRUE) {
                         labels = c("-", "+"))
   
 }
-hist_impute(dataCFMI, use_keep = TRUE)
+#hist_impute(dataCFMI, use_keep = TRUE)
+hist_impute(dataCFQH, use_keep = TRUE)
 
 
 # Average biological replicates
@@ -324,8 +324,10 @@ average_reps = function(df, samples) {
   
   return(df)
 }
-dataCFMIA = average_reps(dataCFMI, c("AMO1(?=_)", "AMO1br", "INA6", "KMS11", "KMS34",
-                                     "L363", "MM1S", "RPMI8226", "U266"))
+#dataCFMIA = average_reps(dataCFMI, c("AMO1(?=_)", "AMO1br", "INA6", "KMS11", "KMS34",
+#                                     "L363", "MM1S", "RPMI8226", "U266"))
+dataCFQHA = average_reps(dataCFQH, c("AMO1(?=_)", "AMO1br", "INA6", "KMS11", "KMS34",
+                                     "L363", "MM1S", "RPMI8226"))
 
 
 # Visualization: Heatmap on finalized phospho data (sourced form PROGENy_RNAseq)
@@ -351,20 +353,21 @@ sampleHeatmap = function(matr, col = TRUE) {
            show_colnames = FALSE,
            col = colors)
 }
-sampleHeatmap(as.matrix(dataCFMIA[dataCFMIA$KEEP, 56:64]))
+#sampleHeatmap(as.matrix(dataCFMIA[dataCFMIA$KEEP, 56:64]))
+sampleHeatmap(as.matrix(dataCFQHA[50:57]))
 
 
 # Visualization: Pairs plot on final sample data set (SLOW!)
 #plot_pairs(dataCFMIA, "^LOG2.*(?<!_bR[0-9])$", use_keep = TRUE)
 
 # Save workspace
-#save.image("checkpoint_phospho.RData")
+#save.image("checkpoint_phospho_quantile_norm_hybrid_impute.RData")
 
 
 ############################################################
 # Step 6a - Kinase Set Enrichment Analysis + PhosphoSitePlus
 ############################################################
-#load("checkpoint_phospho.RData")
+#load("checkpoint_phospho_quantile_norm_hybrid_impute.RData")
 ## Organize phospho data
 phospho = dataCFMIA[dataCFMIA$KEEP, grep("^LOG2.*(?<!_bR[0-9])$", names(dataCFMIA),
                                          value = TRUE, perl = TRUE)]  # Transfer filtered data
