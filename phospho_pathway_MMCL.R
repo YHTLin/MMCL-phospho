@@ -162,13 +162,16 @@ median_centering = function(df, use_keep = TRUE) {
   # df = data frame containing LOG2 columns for normalization
   # use_keep = filter rows using KEEP column prior to computing the median for normalization
   LOG2.names = grep("^LOG2", names(df), value = TRUE)
+  
   if (use_keep) {
     df[, LOG2.names] = lapply(LOG2.names, 
                               function(x) {
                                 LOG2 = df[df$KEEP, x]
                                 LOG2[!is.finite(LOG2)] = NA   # Exclude 0 intensity values from median calculation
                                 gMedian = median(LOG2, na.rm = TRUE)
-                                df[, x] - gMedian
+                                tmp = df[, x] - gMedian
+                                tmp[!is.finite(tmp)] = NA
+                                tmp
                                 }
                               )
   } else {
@@ -177,7 +180,9 @@ median_centering = function(df, use_keep = TRUE) {
                                 LOG2 = df[, x]
                                 LOG2[!is.finite(LOG2)] = NA   # Exclude 0 intensity values from median calculation
                                 gMedian = median(LOG2, na.rm = TRUE)
-                                df[, x] - gMedian
+                                tmp = df[, x] - gMedian
+                                tmp[!is.finite(tmp)] = NA
+                                tmp
                               }
                             )
   }
@@ -304,7 +309,6 @@ hist_impute = function(df, use_keep = TRUE) {
     scale_fill_discrete(name = "Imputed",
                         breaks = c("FALSE", "TRUE"),
                         labels = c("-", "+"))
-  
 }
 #hist_impute(dataCFMI, use_keep = TRUE)
 hist_impute(dataCFQH, use_keep = TRUE)
@@ -369,15 +373,15 @@ sampleHeatmap(as.matrix(dataCFQHA[50:57]))
 ############################################################
 #load("checkpoint_phospho_quantile_norm_hybrid_impute.RData")
 ## Organize phospho data
-phospho = dataCFMIA[dataCFMIA$KEEP, grep("^LOG2.*(?<!_bR[0-9])$", names(dataCFMIA),
+phospho = dataCFQHA[dataCFQHA$KEEP, grep("^LOG2.*(?<!_bR[0-9])$", names(dataCFQHA),
                                          value = TRUE, perl = TRUE)]  # Transfer filtered data
 # Normalize intensities such that the mean intensity is 0 for each site (relative changes in phosphosite intensity)
 phospho = as.data.frame(t(apply(as.matrix(phospho), 1, function(x) x - mean(x))))
-phospho$ID = paste0(dataCFMIA[dataCFMIA$KEEP, "UniProtID"], "_",
-                    dataCFMIA[dataCFMIA$KEEP, "Amino.acid"],
-                    dataCFMIA[dataCFMIA$KEEP, "Position"]) # Organize phospho matrix ([UniProtID]_[Amino Acid][Position])
+phospho$ID = paste0(dataCFQHA[dataCFQHA$KEEP, "UniProtID"], "_",
+                    dataCFQHA[dataCFQHA$KEEP, "Amino.acid"],
+                    dataCFQHA[dataCFQHA$KEEP, "Position"]) # Organize phospho matrix ([UniProtID]_[Amino Acid][Position])
 phospho$ID = toupper(phospho$ID)   # Raise IDs to upper case
-phospho$Gene.name = dataCFMIA[dataCFMIA$KEEP, "Gene.Name"]
+phospho$Gene.name = dataCFQHA[dataCFQHA$KEEP, "Gene.Name"]
 # Organize into list with 2 elements, value (phospho intensities) and lab (phospho site/annotation)
 require(dplyr)
 phospho = list(values = dplyr::select(phospho, starts_with("LOG2")),
@@ -441,9 +445,6 @@ KSEA = function(phospho, pMatrix) {
 }
 kinAct_pSitePlus  = KSEA(phospho, adjMat_pSitePlus)
 kinAct_pSitePlus = lapply(kinAct_pSitePlus, function(x) x[complete.cases(x), ])   #Remove rows with NA
-###ONLY 700 QUANTIFIED SITES ARE ANNOTATED IN PhosphoSitePlus, ASSOCIATED WITH 173 KINASES (meaning we're tossing a lot of phospho data)
-###IN TOTAL, 1219 KINASE-SUBSTRATE RELATIONSHIPS ARE ESTABLISHED USING PhosphoSitePlus
-
 
 
 
@@ -451,13 +452,13 @@ kinAct_pSitePlus = lapply(kinAct_pSitePlus, function(x) x[complete.cases(x), ]) 
 # Step 6b - Kinase Set Enrichment Analysis + NetworKIN
 ############################################################
 ## Produce a table of sites for NetworKIN to predict possible kinase associations
-#write.table(dataCFMIA[dataCFMIA$KEEP, c("UniProtID", "Position", "Amino.acid")],
-#            file = "all-filtered-sites.tsv", 
+#write.table(dataCFQHA[dataCFQHA$KEEP, c("UniProtID", "Position", "Amino.acid")],
+#            file = "all-filtered-sites-quantileNorm-hybridImpute.tsv", 
 #            sep = "\t", quote = FALSE, col.names = FALSE, row.names = FALSE)
 
 
 ## Load NetworKIN phosphosite-kinase predictions
-networKIN = read.table(file = 'NetworKIN_predictions_180216.tsv', sep = '\t', header = TRUE,
+networKIN = read.table(file = 'NetworKIN_predictions_180404.tsv', sep = '\t', header = TRUE,
                        stringsAsFactors = F, quote = "", fill = TRUE)
 # Set threshold for networKIN score
 networKIN = networKIN[networKIN$NetworKIN.score > 2, ]   # CHANGE CUTOFF HERE
@@ -494,7 +495,7 @@ colnames(kinome) = c("name", "gene", "uniprotID")
 kinome$uniprotID = sub("^\\(", "", kinome$uniprotID)
 
 
-## Calculate mean phosphosite intensity (Kinase phosphorylation scoring or KAS) on kinases
+## Calculate mean phosphosite intensity (Kinase phosphorylation scoring or KPS) on kinases
 KPS = function(phospho, kinome) {
   # phospho = a list of two dataframes with same number of columns (values = phospho data; lab = site information) 
   # kinome = a dataframe containing kinase information
@@ -534,7 +535,12 @@ superheatKIN = function(KSEA_lst) {
   superheat(X = t(KSEA_lst$score),
             
             # Set heatmap color
-            heat.pal = rev(brewer.pal(9, "RdBu")),
+            #heat.pal = rev(brewer.pal(9, "RdBu")),
+            heat.pal = c("lightskyblue", "black", "yellow"),
+            heat.pal.values = c(0, 0.5, 1),
+            heat.lim = c(-max(max(KSEA_lst$score), abs(min(KSEA_lst$score))), 
+                         max(max(KSEA_lst$score), abs(min(KSEA_lst$score)))),
+            
             
             # Draw row (sample) dendrogram
             row.dendrogram = TRUE,
@@ -583,11 +589,17 @@ pheatmapKIN = function(KSEA_lst) {
   
   sort_hclust <- function(...) as.hclust(dendsort(as.dendrogram(...)))  # For ordering dendrogram
   
-  colors = colorRampPalette(rev(brewer.pal(11, "RdBu")))(300)
+  #colors = colorRampPalette(rev(brewer.pal(11, "RdBu")))(300)
+  colors = colorRampPalette(c("lightskyblue", "black", "yellow"))(300)
+  breakPTS = seq(from = -max(max(KSEA_lst$score), abs(min(KSEA_lst$score))),
+                 to = max(max(KSEA_lst$score), abs(min(KSEA_lst$score))),
+                 length.out = 300)
+  
   pheatmap(t(score),
            cluster_cols = sort_hclust(hclust(kinaseDist)),
            cluster_rows = sort_hclust(hclust(sampleDist)),
            col = colors,
+           breaks = breakPTS,
            fontsize_row = 10,
            fontsize_col = 5.5)
 }
@@ -646,7 +658,7 @@ if (FALSE) {
 require(httr)
 # Map uniprotID to KEGG identifiers
 GET(url = "http://rest.kegg.jp", path = "conv/uniprot/hsa",
-    write_disk("KEGG_uniprot_ID_map.txt", overwrite = TRUE))   
+    write_disk("KEGG_uniprot_ID_map.txt", overwrite = TRUE))
 IDmap = read.table("KEGG_uniprot_ID_map.txt", sep = "\t", stringsAsFactors = FALSE)
 colnames(IDmap) = c("kid", "uniprotID")   # name columns
 IDmap$kid = sub("^hsa:", "", IDmap$kid)   # clean characters
@@ -676,18 +688,17 @@ signalID = c("04150", "04014", "04015", "04010", "04012", "04310", "04330", "043
              "04350", "04390", "04370", "04371", "04630", "04064", "04668", "04066", 
              "04068", "04020", "04070", "04072", "04071", "04024", "04022", "04151", 
              "04152")
-sigPath = filter(pathNames, path %in% signalID)
 # Merge human signaling pathways with their components (KEGG id) and respective uniprotIDs
-sigPath = left_join(sigPath, pathMAP, by = "path")
-sigPath = left_join(sigPath, IDmap, by = "kid")
+sigPath = filter(pathNames, path %in% signalID) %>%
+  left_join(pathMAP, by = "path") %>%
+  left_join(IDmap, by = "kid")
 rm(signalID)
 
 
 ## Filter for pathways in human cancer (path:hsa05200)
-cancerPath = filter(pathNames, path %in% "04115")
-# Merge human cancer pathways with their components (KEGG id) and respective uniprotIDs
-cancerPath = left_join(cancerPath, pathMAP, by = "path")
-cancerPath = left_join(cancerPath, IDmap, by = "kid")
+cancerPath = filter(pathNames, path %in% "04115") %>%
+  left_join(pathMAP, by = "path") %>%
+  left_join(IDmap, by = "kid")
 rm(pathNames, pathMAP, IDmap)
 
 
